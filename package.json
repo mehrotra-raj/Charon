@@ -1,0 +1,16 @@
+{
+  "name": "charon",
+  "version": "1.0.0",
+  "description": "A distributed job queue system",
+  "license": "ISC",
+  "author": "Raj",
+  "type": "commonjs",
+  "main": "index.js",
+  "scripts": {
+    "test": "node index.js"
+  },
+  "dependencies": {
+    "ioredis": "^5.10.1",
+    "uuid": "^13.0.0"
+  }
+}
