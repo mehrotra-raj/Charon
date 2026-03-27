@@ -7,6 +7,8 @@ async function enqueue(queueName, type, payload) {
         type,
         payload,
         status: "pending",
+        attempts: 0,
+        maxAttempts: 3,
         createdAt: Date.now()
     }
     await redis.lpush(`queue:${queueName}`, JSON.stringify(job));
