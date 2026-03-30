@@ -1,4 +1,25 @@
 const redis = require("../utils/redis")
+const { v4: uuidv4 } = require('uuid')
+const workerId = uuidv4();
+console.log(`Worker ID: ${workerId}`);
+
+async function acquireLock(jobId) {
+        const result = await redis.set(
+            `lock:${jobId}`,
+            workerId,
+            'NX',
+            'EX',
+            30
+        )
+        return result === 'OK'
+}
+async function releaseLock(jobId) {
+    const currentOwner = await redis.get(`lock:${jobId}`);
+    if (currentOwner === workerId) {
+        await redis.del(`lock:${jobId}`);
+    }
+}   
+
 let isProcessing = false;
 let shouldStop = false;
 function sleep (ms) {
@@ -41,12 +62,22 @@ async function startWorker(queueName) {
             maxAttempts: parseInt(jobData.maxAttempts),
             createdAt: parseInt(jobData.createdAt)
         }
+        
+        const locked = await acquireLock(jobId)
+        if (!locked) {
+            // put it back into the sorted set with its original priority
+            const priority = result[1]
+            await redis.zadd(`queue:${queueName}`, priority, jobId)
+            console.log(`Job ${jobId} already locked, putting back`)
+            continue
+        }
         isProcessing = true;
-
         try {
             await processJob(job);
             await redis.del(`job:${jobId}`)
+            await releaseLock(jobId)
         } catch (err) {
+             await releaseLock(jobId)
             job.attempts += 1
             console.error(`Job failed: ${job.id} | attempt ${job.attempts}/${job.maxAttempts}`)
             if(job.attempts < job.maxAttempts) {
