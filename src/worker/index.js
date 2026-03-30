@@ -8,7 +8,7 @@ async function processJob(job) {
     console.log(`Processing job; ${job.id} | ${job.type}`);
     console.log(`Payload :`,JSON.stringify(job.payload));
     // simulate random failure
-    if (Math.random() < 0.9) {
+    if (Math.random() < 0.5) {
     throw new Error('Something went wrong processing the job')
     }
     
@@ -21,14 +21,31 @@ async function startWorker(queueName) {
     while(!shouldStop) {
         //async loop to make it asynchronouse or else it will keep runnign infintely
         //blocking every other task
-        const result = await redis.brpop(`queue:${queueName}`, 0)
-        if(!result) {
+        const result = await redis.zpopmin(`queue:${queueName}`, 1);
+
+        if(!result || result.length == 0) {
+            await sleep(500);
             continue;
         }
-        isProcessing = true
-        const job = JSON.parse(result[1]);
+        
+        const jobId = result[0];
+        const jobData = await redis.hgetall(`job:${jobId}`);
+        if(!jobData) {
+            await sleep(500);
+            continue;
+        }
+        const job = {
+            ...jobData,
+            payload: JSON.parse(jobData.payload),
+            attempts: parseInt(jobData.attempts),
+            maxAttempts: parseInt(jobData.maxAttempts),
+            createdAt: parseInt(jobData.createdAt)
+        }
+        isProcessing = true;
+
         try {
-            await processJob(job)
+            await processJob(job);
+            await redis.del(`job:${jobId}`)
         } catch (err) {
             job.attempts += 1
             console.error(`Job failed: ${job.id} | attempt ${job.attempts}/${job.maxAttempts}`)
@@ -36,12 +53,14 @@ async function startWorker(queueName) {
                 const delay = 1000 * Math.pow(2, job.attempts) + Math.floor(Math.random() * 1000); //exponential backoff
                 console.log(`Retrying job: ${job.id} in ${delay} ms`);
                 await sleep(delay)
-                await redis.lpush(`queue:${queueName}`, JSON.stringify(job));
+                await redis.hset(`job:${jobId}`, 'attempts', job.attempts);
+                await redis.zadd(`queue:${queueName}`, job.attempts, jobId);
             } else {
                 console.log(`Job exhausted all retries, moving to DLQ: ${job.id}`)
                 //adds to dead-letter queue in redis
                await redis.lpush(`dead:${queueName}`, JSON.stringify(job))
                 //added it in a different dead email queue; 
+                await redis.hset(`job:${jobId}`, 'status', 'dead');
             }
         }
         
