@@ -1,5 +1,6 @@
 const Redis = require('ioredis')
 const { v4: uuidv4 } = require('uuid')
+const logger = require('../utils/logger')
 
 class CharonClient {
     constructor(config) {
@@ -18,7 +19,7 @@ class CharonClient {
     }   
     await this.redis.hset(`job:${job.id}`, job);
     await this.redis.zadd(`queue:${queueName}`, job.priority, job.id);
-    console.log(`Job enqueued: ${job.id} | priority: ${job.priority}`);
+    logger.info({ jobId: job.id, queue: queueName, type, priority: job.priority }, 'Job enqueued');
     return job;
 }
 }

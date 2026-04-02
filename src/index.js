@@ -1,5 +1,5 @@
 const CharonWorker = require('./worker')
-
+const logger = require("./utils/logger")
 const worker = new CharonWorker({
   queue: 'email',
   concurrency: 3,
@@ -7,9 +7,9 @@ const worker = new CharonWorker({
 })
 
 worker.register('welcome-email', async (job) => {
-  console.log(`Sending welcome email to ${job.payload.email}`)
+  logger.info(`Sending welcome email to ${job.payload.email}`)
   await worker.sleep(500)
-  console.log(`Email sent to ${job.payload.email}`)
+  logger.info(`Email sent to ${job.payload.email}`)
 })
 
 worker.start()

@@ -1,5 +1,6 @@
 const Redis = require("ioredis");
 const { v4: uuidv4 } = require("uuid");
+const logger = require("../utils/logger");
 
 class CharonWorker {
   constructor(config) {
@@ -10,7 +11,10 @@ class CharonWorker {
     this.shouldStop = false;
     this.activeWorkers = 0;
     this.workerId = uuidv4();
-    console.log(`Worker ID: ${this.workerId}`);
+    logger.info(
+      { workerId: this.workerId, queue: this.queue ?? null },
+      "Worker ID",
+    );
   }
   register(jobType, handler) {
     this.handlers.set(jobType, handler);
@@ -43,7 +47,10 @@ class CharonWorker {
   }
 
   async startWorker(queueName) {
-    console.log(`Worker started, listening on queue:${queueName}`);
+    logger.info(
+      { queue: queueName },
+      "Worker started, listening on queue",
+    );
     while (!this.shouldStop) {
       //async loop to make it asynchronouse or else it will keep runnign infintely
       //blocking every other task
@@ -74,29 +81,45 @@ class CharonWorker {
         // put it back into the sorted set with its original priority
         const priority = result[1];
         await this.redis.zadd(`queue:${queueName}`, priority, jobId);
-        console.log(`Job ${jobId} already locked, putting back`);
+        logger.info(
+          { jobId, queue: queueName },
+          "Job already locked, putting back",
+        );
         continue;
       }
       this.activeWorkers++;
       try {
         await this.processJob(job);
+        logger.info(
+          { jobId, queue: queueName, duration_ms: Date.now() - job.createdAt },
+          'job completed',
+        );
         await this.redis.del(`job:${jobId}`);
         await this.releaseLock(jobId);
       } catch (err) {
         await this.releaseLock(jobId);
         job.attempts += 1;
-        console.error(
-          `Job failed: ${job.id} | attempt ${job.attempts}/${job.maxAttempts}`,
+        logger.error(
+          {
+            jobId,
+            queue: queueName,
+            attempt: job.attempts,
+            maxAttempts: job.maxAttempts,
+          },
+          "Job failed",
         );
         if (job.attempts < job.maxAttempts) {
           const delay =
             1000 * Math.pow(2, job.attempts) + Math.floor(Math.random() * 1000); //exponential backoff
-          console.log(`Retrying job: ${job.id} in ${delay} ms`);
+          logger.info({ jobId, queue: queueName, delay }, "Retrying job");
           await this.sleep(delay);
           await this.redis.hset(`job:${jobId}`, "attempts", job.attempts);
           await this.redis.zadd(`queue:${queueName}`, job.priority, jobId);
         } else {
-          console.log(`Job exhausted all retries, moving to DLQ: ${job.id}`);
+          logger.info(
+            { jobId, queue: queueName, attempts: job.attempts },
+            "Job exhausted all retries, moving to DLQ",
+          );
           //adds to dead-letter queue in redis
           await this.redis.lpush(`dead:${queueName}`, JSON.stringify(job));
           //added it in a different dead email queue;
@@ -106,16 +129,25 @@ class CharonWorker {
 
       this.activeWorkers--;
       if (this.shouldStop && this.activeWorkers === 0) {
-        console.log("All jobs finished, exiting now");
+        logger.info(
+          { queue: this.queue },
+          "All jobs finished, exiting now",
+        );
         process.exit(0);
       }
     }
   }
   async start() {
     // spawn the worker pool
-    console.log(`Starting ${this.concurrency} workers on queue: ${this.queue}`);
+    logger.info(
+      { queue: this.queue, concurrency: this.concurrency },
+      "Starting workers",
+    );
     process.on("SIGINT", () => {
-      console.log("Shutdown signal received...");
+      logger.info(
+        { queue: this.queue },
+        "Shutdown signal received",
+      );
       this.shouldStop = true;
       if (this.activeWorkers === 0) process.exit(0);
     });
