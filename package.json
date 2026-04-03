@@ -7,9 +7,12 @@
   "type": "commonjs",
   "main": "index.js",
   "scripts": {
-    "test": "node index.js"
+    "test": "node index.js",
+    "start:api": "node src/api/index.js",
+    "start:worker": "node src/index.js"
   },
   "dependencies": {
+    "express": "^5.2.1",
     "ioredis": "^5.10.1",
     "pino": "^10.3.1",
     "pino-pretty": "^13.1.3",
