@@ -38,7 +38,30 @@ class CharonWorker {
   sleep(ms) {
     return new Promise((resolve) => setTimeout(resolve, ms));
   }
+  async getJob(jobId) {
+  const jobData = await this.redis.hgetall(`job:${jobId}`)
+  if (!jobData || Object.keys(jobData).length === 0) return null
+  return {
+    ...jobData,
+    payload: JSON.parse(jobData.payload || '{}'),
+    attempts: parseInt(jobData.attempts || 0),
+    maxAttempts: parseInt(jobData.maxAttempts || 3),
+    priority: parseInt(jobData.priority || 10),
+    createdAt: parseInt(jobData.createdAt || 0),
+  }
+}
 
+async getQueues() {
+  const keys = await this.redis.keys('queue:*')
+  const queues = []
+  for (const key of keys) {
+    const queueName = key.replace('queue:', '')
+    const activeJobs = await this.redis.zcard(key)
+    const deadJobs = await this.redis.llen(`dead:${queueName}`)
+    queues.push({ name: queueName, activeJobs, deadJobs })
+  }
+  return queues
+}
   async processJob(job) {
     const handler = this.handlers.get(job.type);
     if (!handler)
@@ -89,11 +112,13 @@ class CharonWorker {
       }
       this.activeWorkers++;
       try {
+          await this.redis.hset(`job:${jobId}`, "status", "running", "startedAt", Date.now());
         await this.processJob(job);
         logger.info(
           { jobId, queue: queueName, duration_ms: Date.now() - job.createdAt },
           'job completed',
         );
+        await this.redis.hset(`job:${jobId}`, "status", "completed", "completedAt", Date.now());
         await this.redis.del(`job:${jobId}`);
         await this.releaseLock(jobId);
       } catch (err) {
@@ -113,7 +138,7 @@ class CharonWorker {
             1000 * Math.pow(2, job.attempts) + Math.floor(Math.random() * 1000); //exponential backoff
           logger.info({ jobId, queue: queueName, delay }, "Retrying job");
           await this.sleep(delay);
-          await this.redis.hset(`job:${jobId}`, "attempts", job.attempts);
+          await this.redis.hset(`job:${jobId}`, "status", "pending", "attempts", job.attempts);
           await this.redis.zadd(`queue:${queueName}`, job.priority, jobId);
         } else {
           logger.info(
@@ -123,7 +148,7 @@ class CharonWorker {
           //adds to dead-letter queue in redis
           await this.redis.lpush(`dead:${queueName}`, JSON.stringify(job));
           //added it in a different dead email queue;
-          await this.redis.hset(`job:${jobId}`, "status", "dead");
+          await this.redis.hset(`job:${jobId}`, "status", "dead", "failedAt", Date.now());
         }
       }
 
