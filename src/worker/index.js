@@ -1,6 +1,7 @@
 const Redis = require("ioredis");
 const { v4: uuidv4 } = require("uuid");
 const logger = require("../utils/logger");
+const LockManager = require("../core/lock.manager");
 
 class CharonWorker {
   constructor(config) {
@@ -11,6 +12,7 @@ class CharonWorker {
     this.shouldStop = false;
     this.activeWorkers = 0;
     this.workerId = uuidv4();
+    this.lockManager = new LockManager(this.redis, this.workerId);
     logger.info(
       { workerId: this.workerId, queue: this.queue ?? null },
       "Worker ID",
@@ -19,22 +21,7 @@ class CharonWorker {
   register(jobType, handler) {
     this.handlers.set(jobType, handler);
   }
-  async acquireLock(jobId) {
-    const result = await this.redis.set(
-      `lock:${jobId}`,
-      this.workerId,
-      "NX",
-      "EX",
-      30,
-    );
-    return result === "OK";
-  }
-  async releaseLock(jobId) {
-    const currentOwner = await this.redis.get(`lock:${jobId}`);
-    if (currentOwner === this.workerId) {
-      await this.redis.del(`lock:${jobId}`);
-    }
-  }
+
   sleep(ms) {
     return new Promise((resolve) => setTimeout(resolve, ms));
   }
@@ -99,7 +86,7 @@ async getQueues() {
         createdAt: parseInt(jobData.createdAt),
       };
 
-      const locked = await this.acquireLock(jobId);
+      const locked = await this.lockManager.acquireLock(jobId);
       if (!locked) {
         // put it back into the sorted set with its original priority
         const priority = result[1];
@@ -120,9 +107,9 @@ async getQueues() {
         );
         await this.redis.hset(`job:${jobId}`, "status", "completed", "completedAt", Date.now());
         await this.redis.del(`job:${jobId}`);
-        await this.releaseLock(jobId);
+        await this.lockManager.releaseLock(jobId);
       } catch (err) {
-        await this.releaseLock(jobId);
+        await this.lockManager.releaseLock(jobId);
         job.attempts += 1;
         logger.error(
           {

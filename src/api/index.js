@@ -25,7 +25,7 @@ const client = new CharonClient({
   redisUrl: process.env.REDIS_URL || "redis://localhost:6379",
 });
 
-// Validation helper (basic, consider joi for production)
+
 function validateEnqueue(req) {
   const { queue, type, payload } = req.body;
   if (!queue || typeof queue !== "string")
@@ -36,7 +36,7 @@ function validateEnqueue(req) {
     throw new Error("Invalid payload: must be an object");
 }
 
-// Enqueue job
+
 app.post("/enqueue", async (req, res) => {
   try {
     validateEnqueue(req);
@@ -49,7 +49,7 @@ app.post("/enqueue", async (req, res) => {
   }
 });
 
-// Get job status
+
 app.get("/jobs/:id", async (req, res) => {
   try {
     const jobId = req.params.id;
@@ -57,7 +57,7 @@ app.get("/jobs/:id", async (req, res) => {
     if (!jobData || Object.keys(jobData).length === 0) {
       return res.status(404).json({ error: "Job not found" });
     }
-    res.json(job);
+    res.json(jobData);
   } catch (err) {
     logger.error(err);
     res.status(500).json({ error: "Failed to fetch job" });
