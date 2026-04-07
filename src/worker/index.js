@@ -2,7 +2,7 @@ const Redis = require("ioredis");
 const { v4: uuidv4 } = require("uuid");
 const logger = require("../utils/logger");
 const LockManager = require("../core/lock.manager");
-
+const JobManager = require("../core/job.manager");
 class CharonWorker {
   constructor(config) {
     this.redis = new Redis(config.redisUrl);
@@ -13,6 +13,7 @@ class CharonWorker {
     this.activeWorkers = 0;
     this.workerId = uuidv4();
     this.lockManager = new LockManager(this.redis, this.workerId);
+    this.jobManager = new JobManager(this.redis, this.handlers);
     logger.info(
       { workerId: this.workerId, queue: this.queue ?? null },
       "Worker ID",
@@ -25,42 +26,21 @@ class CharonWorker {
   sleep(ms) {
     return new Promise((resolve) => setTimeout(resolve, ms));
   }
-  async getJob(jobId) {
-  const jobData = await this.redis.hgetall(`job:${jobId}`)
-  if (!jobData || Object.keys(jobData).length === 0) return null
-  return {
-    ...jobData,
-    payload: JSON.parse(jobData.payload || '{}'),
-    attempts: parseInt(jobData.attempts || 0),
-    maxAttempts: parseInt(jobData.maxAttempts || 3),
-    priority: parseInt(jobData.priority || 10),
-    createdAt: parseInt(jobData.createdAt || 0),
-  }
-}
 
-async getQueues() {
-  const keys = await this.redis.keys('queue:*')
-  const queues = []
-  for (const key of keys) {
-    const queueName = key.replace('queue:', '')
-    const activeJobs = await this.redis.zcard(key)
-    const deadJobs = await this.redis.llen(`dead:${queueName}`)
-    queues.push({ name: queueName, activeJobs, deadJobs })
-  }
-  return queues
-}
-  async processJob(job) {
-    const handler = this.handlers.get(job.type);
-    if (!handler)
-      throw new Error(`No handler registered for job type: ${job.type}`);
-    await handler(job);
+  async getQueues() {
+    const keys = await this.redis.keys("queue:*");
+    const queues = [];
+    for (const key of keys) {
+      const queueName = key.replace("queue:", "");
+      const activeJobs = await this.redis.zcard(key);
+      const deadJobs = await this.redis.llen(`dead:${queueName}`);
+      queues.push({ name: queueName, activeJobs, deadJobs });
+    }
+    return queues;
   }
 
   async startWorker(queueName) {
-    logger.info(
-      { queue: queueName },
-      "Worker started, listening on queue",
-    );
+    logger.info({ queue: queueName }, "Worker started, listening on queue");
     while (!this.shouldStop) {
       //async loop to make it asynchronouse or else it will keep runnign infintely
       //blocking every other task
@@ -72,19 +52,11 @@ async getQueues() {
       }
 
       const jobId = result[0];
-      const jobData = await this.redis.hgetall(`job:${jobId}`);
-      if (!jobData) {
+      const job = await this.jobManager.getJob(jobId);
+      if (!job) {
         await this.sleep(500);
         continue;
       }
-      const job = {
-        ...jobData,
-        payload: JSON.parse(jobData.payload),
-        attempts: parseInt(jobData.attempts),
-        maxAttempts: parseInt(jobData.maxAttempts),
-        priority: parseInt(jobData.priority),
-        createdAt: parseInt(jobData.createdAt),
-      };
 
       const locked = await this.lockManager.acquireLock(jobId);
       if (!locked) {
@@ -99,14 +71,13 @@ async getQueues() {
       }
       this.activeWorkers++;
       try {
-          await this.redis.hset(`job:${jobId}`, "status", "running", "startedAt", Date.now());
-        await this.processJob(job);
+        await this.jobManager.markRunning(jobId);
+        await this.jobManager.processJob(job);
         logger.info(
           { jobId, queue: queueName, duration_ms: Date.now() - job.createdAt },
-          'job completed',
+          "job completed",
         );
-        await this.redis.hset(`job:${jobId}`, "status", "completed", "completedAt", Date.now());
-        await this.redis.del(`job:${jobId}`);
+        await this.jobManager.markCompleted(jobId);
         await this.lockManager.releaseLock(jobId);
       } catch (err) {
         await this.lockManager.releaseLock(jobId);
@@ -125,26 +96,19 @@ async getQueues() {
             1000 * Math.pow(2, job.attempts) + Math.floor(Math.random() * 1000); //exponential backoff
           logger.info({ jobId, queue: queueName, delay }, "Retrying job");
           await this.sleep(delay);
-          await this.redis.hset(`job:${jobId}`, "status", "pending", "attempts", job.attempts);
-          await this.redis.zadd(`queue:${queueName}`, job.priority, jobId);
+          await this.jobManager.retryJob(job, queueName);
         } else {
           logger.info(
             { jobId, queue: queueName, attempts: job.attempts },
             "Job exhausted all retries, moving to DLQ",
           );
-          //adds to dead-letter queue in redis
-          await this.redis.lpush(`dead:${queueName}`, JSON.stringify(job));
-          //added it in a different dead email queue;
-          await this.redis.hset(`job:${jobId}`, "status", "dead", "failedAt", Date.now());
+          await this.jobManager.moveToDeadLetter(job, queueName);
         }
       }
 
       this.activeWorkers--;
       if (this.shouldStop && this.activeWorkers === 0) {
-        logger.info(
-          { queue: this.queue },
-          "All jobs finished, exiting now",
-        );
+        logger.info({ queue: this.queue }, "All jobs finished, exiting now");
         process.exit(0);
       }
     }
@@ -156,10 +120,7 @@ async getQueues() {
       "Starting workers",
     );
     process.on("SIGINT", () => {
-      logger.info(
-        { queue: this.queue },
-        "Shutdown signal received",
-      );
+      logger.info({ queue: this.queue }, "Shutdown signal received");
       this.shouldStop = true;
       if (this.activeWorkers === 0) process.exit(0);
     });
