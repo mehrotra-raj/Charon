@@ -14,6 +14,22 @@ class CharonWorker {
     this.workerId = uuidv4();
     this.lockManager = new LockManager(this.redis, this.workerId);
     this.jobManager = new JobManager(this.redis, this.handlers);
+    this.redis.defineCommand("popAndLock", {
+      numberOfKeys: 2,
+      lua: `
+      local result = redis.call('ZPOPMIN', KEYS[1], 1)
+      if #result == 0 then return nil end
+      local jobId = result[1]
+      local priority = result[2]
+      local lockKey = KEYS[2] .. jobId
+      local locked = redis.call('SET', lockKey, ARGV[1], 'NX', 'PX', ARGV[2])
+      if locked == false then
+        redis.call('ZADD', KEYS[1], priority, jobId)
+        return nil
+      end
+      return jobId
+    `,
+    });
     logger.info(
       { workerId: this.workerId, queue: this.queue ?? null },
       "Worker ID",
@@ -42,31 +58,19 @@ class CharonWorker {
   async startWorker(queueName) {
     logger.info({ queue: queueName }, "Worker started, listening on queue");
     while (!this.shouldStop) {
-      //async loop to make it asynchronouse or else it will keep runnign infintely
-      //blocking every other task
-      const result = await this.redis.zpopmin(`queue:${queueName}`, 1);
-
-      if (!result || result.length == 0) {
+      const jobId = await this.redis.popAndLock(
+        `queue:${queueName}`,  // KEYS[1]
+        `lock:`,               // KEYS[2]
+        this.workerId,         // ARGV[1]
+        30000                  // ARGV[2] — lock TTL in ms
+      );
+      if (!jobId) {
         await this.sleep(500);
         continue;
       }
-
-      const jobId = result[0];
       const job = await this.jobManager.getJob(jobId);
       if (!job) {
-        await this.sleep(500);
-        continue;
-      }
-
-      const locked = await this.lockManager.acquireLock(jobId);
-      if (!locked) {
-        // put it back into the sorted set with its original priority
-        const priority = result[1];
-        await this.redis.zadd(`queue:${queueName}`, priority, jobId);
-        logger.info(
-          { jobId, queue: queueName },
-          "Job already locked, putting back",
-        );
+        await this.lockManager.releaseLock(jobId);
         continue;
       }
       this.activeWorkers++;
