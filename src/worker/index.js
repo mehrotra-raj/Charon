@@ -30,6 +30,21 @@ class CharonWorker {
       return jobId
     `,
     });
+    this.redis.defineCommand("moveDelayedJobs", {
+      numberOfKeys: 3,
+      lua: `
+      local jobs = redis.call('ZRANGEBYSCORE', KEYS[1], '-inf', ARGV[1], 'LIMIT', 0, 100)
+      if #jobs > 0 then
+        for i, jobId in ipairs(jobs) do
+          local priority = redis.call('HGET', KEYS[3] .. jobId, 'priority')
+          if not priority then priority = 10 end
+          redis.call('ZREM', KEYS[1], jobId)
+          redis.call('ZADD', KEYS[2], priority, jobId)
+        end
+      end
+      return #jobs
+      `
+    });
     logger.info(
       { workerId: this.workerId, queue: this.queue ?? null },
       "Worker ID",
@@ -41,6 +56,26 @@ class CharonWorker {
 
   sleep(ms) {
     return new Promise((resolve) => setTimeout(resolve, ms));
+  }
+
+  async pollDelayedJobs(queueName) {
+    logger.info({ queue: queueName }, "Delayed jobs poller started");
+    while (!this.shouldStop) {
+      try {
+        const moved = await this.redis.moveDelayedJobs(
+          `delayed:${queueName}`,
+          `queue:${queueName}`,
+          `job:`,
+          Date.now()
+        );
+        if (moved > 0) {
+          logger.info({ queue: queueName, count: moved }, "Moved delayed jobs to active queue");
+        }
+      } catch (err) {
+        logger.error({ queue: queueName, err: err.message }, "Error polling delayed jobs");
+      }
+      await this.sleep(1000);
+    }
   }
 
   async getQueues() {
@@ -98,9 +133,8 @@ class CharonWorker {
         if (job.attempts < job.maxAttempts) {
           const delay =
             1000 * Math.pow(2, job.attempts) + Math.floor(Math.random() * 1000); //exponential backoff
-          logger.info({ jobId, queue: queueName, delay }, "Retrying job");
-          await this.sleep(delay);
-          await this.jobManager.retryJob(job, queueName);
+          logger.info({ jobId, queue: queueName, delay }, "Scheduling delayed retry");
+          await this.jobManager.retryJob(job, queueName, delay);
         } else {
           logger.info(
             { jobId, queue: queueName, attempts: job.attempts },
@@ -132,6 +166,7 @@ class CharonWorker {
     for (let i = 0; i < this.concurrency; i++) {
       this.startWorker(this.queue);
     }
+    this.pollDelayedJobs(this.queue);
   }
 }
 

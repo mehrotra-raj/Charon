@@ -72,9 +72,14 @@ class JobManager {
     );
   }
 
-  async retryJob(job, queueName) {
+  async retryJob(job, queueName, delayMs = 0) {
     await this.markPending(job.id, job.attempts);
-    await this.redis.zadd(`queue:${queueName}`, job.priority, job.id);
+    if (delayMs > 0) {
+      const runAt = Date.now() + delayMs;
+      await this.redis.zadd(`delayed:${queueName}`, runAt, job.id);
+    } else {
+      await this.redis.zadd(`queue:${queueName}`, job.priority, job.id);
+    }
   }
 }
 
