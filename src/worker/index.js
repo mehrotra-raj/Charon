@@ -15,7 +15,7 @@ class CharonWorker {
     this.lockManager = new LockManager(this.redis, this.workerId);
     this.jobManager = new JobManager(this.redis, this.handlers);
     this.redis.defineCommand("popAndLock", {
-      numberOfKeys: 2,
+      numberOfKeys: 3,
       lua: `
       local result = redis.call('ZPOPMIN', KEYS[1], 1)
       if #result == 0 then return nil end
@@ -27,8 +27,25 @@ class CharonWorker {
         redis.call('ZADD', KEYS[1], priority, jobId)
         return nil
       end
+      redis.call('ZADD', KEYS[3], ARGV[3], jobId)
       return jobId
     `,
+    });
+    this.redis.defineCommand("getStalledJobs", {
+      numberOfKeys: 2,
+      lua: `
+      local stalled = redis.call('ZRANGEBYSCORE', KEYS[1], '-inf', ARGV[1])
+      local result = {}
+      for i, jobId in ipairs(stalled) do
+        local lockKey = KEYS[2] .. jobId
+        local isLocked = redis.call('EXISTS', lockKey)
+        if isLocked == 0 then
+          redis.call('ZREM', KEYS[1], jobId)
+          table.insert(result, jobId)
+        end
+      end
+      return result
+      `
     });
     this.redis.defineCommand("moveDelayedJobs", {
       numberOfKeys: 3,
@@ -77,7 +94,33 @@ class CharonWorker {
       await this.sleep(1000);
     }
   }
-
+  async pollStalledJobs(queueName) {
+    logger.info({ queue: queueName }, "Stalled jobs poller started");
+    while (!this.shouldStop) {
+      try {
+        const stalledJobs = await this.redis.getStalledJobs(
+          `active:${queueName}`,
+          `lock:`,
+          Date.now()
+        );
+        for (const jobId of stalledJobs) {
+          logger.info({ jobId, queue: queueName }, "Recovering stalled job");
+          const job = await this.jobManager.getJob(jobId);
+          if (job) {
+            job.attempts += 1;
+            if (job.attempts < job.maxAttempts) {
+              await this.jobManager.retryJob(job, queueName, 0);
+            } else {
+              await this.jobManager.moveToDeadLetter(job, queueName);
+            }
+          }
+        }
+      } catch (err) {
+        logger.error({ queue: queueName, err: err.message }, "Error polling stalled jobs");
+      }
+      await this.sleep(5000); // Check for stalled jobs every 5 seconds
+    }
+  }
   async getQueues() {
     const keys = await this.redis.keys("queue:*");
     const queues = [];
@@ -96,8 +139,10 @@ class CharonWorker {
       const jobId = await this.redis.popAndLock(
         `queue:${queueName}`,  // KEYS[1]
         `lock:`,               // KEYS[2]
+        `active:${queueName}`, // KEYS[3]
         this.workerId,         // ARGV[1]
-        30000                  // ARGV[2] — lock TTL in ms
+        30000,                  // ARGV[2] — lock TTL in ms
+        Date.now() + 30000     // ARGV[3] (New: lock TTL timestamp)
       );
       if (!jobId) {
         await this.sleep(500);
@@ -116,7 +161,7 @@ class CharonWorker {
           { jobId, queue: queueName, duration_ms: Date.now() - job.createdAt },
           "job completed",
         );
-        await this.jobManager.markCompleted(jobId);
+        await this.jobManager.markCompleted(jobId, queueName);
         await this.lockManager.releaseLock(jobId);
       } catch (err) {
         await this.lockManager.releaseLock(jobId);
@@ -167,6 +212,7 @@ class CharonWorker {
       this.startWorker(this.queue);
     }
     this.pollDelayedJobs(this.queue);
+    this.pollStalledJobs(this.queue);
   }
 }
 

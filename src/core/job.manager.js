@@ -40,7 +40,7 @@ class JobManager {
     );
   }
 
-  async markCompleted(jobId) {
+  async markCompleted(jobId, queueName) {
     await this.redis.hset(
       `job:${jobId}`,
       'status',
@@ -49,6 +49,9 @@ class JobManager {
       Date.now(),
     );
     await this.redis.del(`job:${jobId}`);
+    if (queueName) {
+      await this.redis.zrem(`active:${queueName}`, jobId);
+    }
   }
 
   async markPending(jobId, attempts) {
@@ -70,6 +73,9 @@ class JobManager {
       'failedAt',
       Date.now(),
     );
+    if (queueName) {
+      await this.redis.zrem(`active:${queueName}`, job.id);
+    }
   }
 
   async retryJob(job, queueName, delayMs = 0) {
@@ -80,7 +86,11 @@ class JobManager {
     } else {
       await this.redis.zadd(`queue:${queueName}`, job.priority, job.id);
     }
+    if (queueName) {
+      await this.redis.zrem(`active:${queueName}`, job.id);
+    }
   }
+
 }
 
 module.exports = JobManager;
