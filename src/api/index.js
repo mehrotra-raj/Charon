@@ -37,6 +37,10 @@ function validateEnqueue(req) {
 }
 
 
+app.get("/", (req, res) => {
+    res.send("Welcome to Charon")
+})
+
 app.post("/enqueue", async (req, res) => {
   try {
     validateEnqueue(req);
@@ -57,6 +61,7 @@ app.get("/jobs/:id", async (req, res) => {
     if (!jobData || Object.keys(jobData).length === 0) {
       return res.status(404).json({ error: "Job not found" });
     }
+    jobData.payload = JSON.parse(jobData.payload);
     res.json(jobData);
   } catch (err) {
     logger.error(err);

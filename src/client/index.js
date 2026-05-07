@@ -25,6 +25,9 @@ class CharonClient {
     );
     return job;
   }
+  async getJob(jobId) {
+  return await this.redis.hgetall(`job:${jobId}`);
+  }
 }
 
 module.exports = CharonClient;

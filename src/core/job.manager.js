@@ -41,16 +41,17 @@ class JobManager {
   }
 
   async markCompleted(jobId, queueName) {
+    const completedAt = Date.now()
     await this.redis.hset(
       `job:${jobId}`,
       'status',
       'completed',
       'completedAt',
-      Date.now(),
+      completedAt,
     );
-    await this.redis.del(`job:${jobId}`);
     if (queueName) {
       await this.redis.zrem(`active:${queueName}`, jobId);
+      await this.redis.zadd(`completed:${queueName}`, completedAt, jobId)
     }
   }
 
