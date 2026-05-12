@@ -19,6 +19,7 @@ class CharonClient {
     };
     await this.redis.hset(`job:${job.id}`, job);
     await this.redis.zadd(`queue:${queueName}`, job.priority, job.id);
+    await this.redis.sadd(`queues`, queueName)
     logger.info(
       { jobId: job.id, queue: queueName, type, priority: job.priority },
       "Job enqueued",
@@ -26,7 +27,18 @@ class CharonClient {
     return job;
   }
   async getJob(jobId) {
-  return await this.redis.hgetall(`job:${jobId}`);
+    return await this.redis.hgetall(`job:${jobId}`);
+  }
+  async getQueues() {
+    const names = await this.redis.smembers('queues');
+    const results = await Promise.all(names.map(async (name) => ({
+      name,
+      waiting: await this.redis.zcard(`queue:${name}`),
+      active: await this.redis.zcard(`active:${name}`),
+      completed: await this.redis.zcard(`completed:${name}`),
+      failed: await this.redis.llen(`dead:${name}`),
+    })));
+    return results;
   }
 }
 

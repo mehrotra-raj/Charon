@@ -45,7 +45,7 @@ class CharonWorker {
         end
       end
       return result
-      `
+      `,
     });
     this.redis.defineCommand("moveDelayedJobs", {
       numberOfKeys: 3,
@@ -60,7 +60,7 @@ class CharonWorker {
         end
       end
       return #jobs
-      `
+      `,
     });
     logger.info(
       { workerId: this.workerId, queue: this.queue ?? null },
@@ -83,13 +83,19 @@ class CharonWorker {
           `delayed:${queueName}`,
           `queue:${queueName}`,
           `job:`,
-          Date.now()
+          Date.now(),
         );
         if (moved > 0) {
-          logger.info({ queue: queueName, count: moved }, "Moved delayed jobs to active queue");
+          logger.info(
+            { queue: queueName, count: moved },
+            "Moved delayed jobs to active queue",
+          );
         }
       } catch (err) {
-        logger.error({ queue: queueName, err: err.message }, "Error polling delayed jobs");
+        logger.error(
+          { queue: queueName, err: err.message },
+          "Error polling delayed jobs",
+        );
       }
       await this.sleep(1000);
     }
@@ -101,7 +107,7 @@ class CharonWorker {
         const stalledJobs = await this.redis.getStalledJobs(
           `active:${queueName}`,
           `lock:`,
-          Date.now()
+          Date.now(),
         );
         for (const jobId of stalledJobs) {
           logger.info({ jobId, queue: queueName }, "Recovering stalled job");
@@ -116,7 +122,10 @@ class CharonWorker {
           }
         }
       } catch (err) {
-        logger.error({ queue: queueName, err: err.message }, "Error polling stalled jobs");
+        logger.error(
+          { queue: queueName, err: err.message },
+          "Error polling stalled jobs",
+        );
       }
       await this.sleep(5000); // Check for stalled jobs every 5 seconds
     }
@@ -137,12 +146,12 @@ class CharonWorker {
     logger.info({ queue: queueName }, "Worker started, listening on queue");
     while (!this.shouldStop) {
       const jobId = await this.redis.popAndLock(
-        `queue:${queueName}`,  // KEYS[1]
-        `lock:`,               // KEYS[2]
+        `queue:${queueName}`, // KEYS[1]
+        `lock:`, // KEYS[2]
         `active:${queueName}`, // KEYS[3]
-        this.workerId,         // ARGV[1]
-        30000,                  // ARGV[2] — lock TTL in ms
-        Date.now() + 30000     // ARGV[3] (New: lock TTL timestamp)
+        this.workerId, // ARGV[1]
+        30000, // ARGV[2] — lock TTL in ms
+        Date.now() + 30000, // ARGV[3] (New: lock TTL timestamp)
       );
       if (!jobId) {
         await this.sleep(500);
@@ -178,7 +187,10 @@ class CharonWorker {
         if (job.attempts < job.maxAttempts) {
           const delay =
             1000 * Math.pow(2, job.attempts) + Math.floor(Math.random() * 1000); //exponential backoff
-          logger.info({ jobId, queue: queueName, delay }, "Scheduling delayed retry");
+          logger.info(
+            { jobId, queue: queueName, delay },
+            "Scheduling delayed retry",
+          );
           await this.jobManager.retryJob(job, queueName, delay);
         } else {
           logger.info(
