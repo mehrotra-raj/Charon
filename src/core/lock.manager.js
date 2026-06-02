@@ -16,10 +16,14 @@ class LockManager {
   }
 
   async releaseLock(jobId) {
-    const currentOwner = await this.redis.get(`lock:${jobId}`);
-    if (currentOwner === this.workerId) {
-      await this.redis.del(`lock:${jobId}`);
-    }
+    const script = `
+      if redis.call("get", KEYS[1]) == ARGV[1] then
+        return redis.call("del", KEYS[1])
+      else
+        return 0
+      end
+    `;
+    await this.redis.eval(script, 1, `lock:${jobId}`, this.workerId);
   }
 }
 

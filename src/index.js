@@ -5,7 +5,7 @@ const emailWorker = new CharonWorker({
   queue: 'email',
   concurrency: 3,
   redisUrl: 'redis://localhost:6379'
-})
+}) 
 
 emailWorker.register('welcome-email', async (job) => {
   logger.info(`Sending welcome email to ${job.payload.email}`)

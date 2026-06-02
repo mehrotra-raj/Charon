@@ -17,50 +17,50 @@ class CharonWorker {
     this.redis.defineCommand("popAndLock", {
       numberOfKeys: 3,
       lua: `
-      local result = redis.call('ZPOPMIN', KEYS[1], 1)
-      if #result == 0 then return nil end
-      local jobId = result[1]
-      local priority = result[2]
-      local lockKey = KEYS[2] .. jobId
-      local locked = redis.call('SET', lockKey, ARGV[1], 'NX', 'PX', ARGV[2])
-      if locked == false then
-        redis.call('ZADD', KEYS[1], priority, jobId)
-        return nil
-      end
-      redis.call('ZADD', KEYS[3], ARGV[3], jobId)
-      return jobId
-    `,
+        local result = redis.call('ZPOPMIN', KEYS[1], 1)
+        if #result == 0 then return nil end
+        local jobId = result[1]
+        local priority = result[2]
+        local lockKey = KEYS[2] .. jobId
+        local locked = redis.call('SET', lockKey, ARGV[1], 'NX', 'PX', ARGV[2])
+        if locked == false then
+          redis.call('ZADD', KEYS[1], priority, jobId)
+          return nil
+        end
+        redis.call('ZADD', KEYS[3], ARGV[3], jobId)
+        return jobId
+      `,
     });
     this.redis.defineCommand("getStalledJobs", {
       numberOfKeys: 2,
       lua: `
-      local stalled = redis.call('ZRANGEBYSCORE', KEYS[1], '-inf', ARGV[1])
-      local result = {}
-      for i, jobId in ipairs(stalled) do
-        local lockKey = KEYS[2] .. jobId
-        local isLocked = redis.call('EXISTS', lockKey)
-        if isLocked == 0 then
-          redis.call('ZREM', KEYS[1], jobId)
-          table.insert(result, jobId)
+        local stalled = redis.call('ZRANGEBYSCORE', KEYS[1], '-inf', ARGV[1])
+        local result = {}
+        for i, jobId in ipairs(stalled) do
+          local lockKey = KEYS[2] .. jobId
+          local isLocked = redis.call('EXISTS', lockKey)
+          if isLocked == 0 then
+            redis.call('ZREM', KEYS[1], jobId)
+            table.insert(result, jobId)
+          end
         end
-      end
-      return result
-      `,
+        return result
+        `,
     });
     this.redis.defineCommand("moveDelayedJobs", {
       numberOfKeys: 3,
       lua: `
-      local jobs = redis.call('ZRANGEBYSCORE', KEYS[1], '-inf', ARGV[1], 'LIMIT', 0, 100)
-      if #jobs > 0 then
-        for i, jobId in ipairs(jobs) do
-          local priority = redis.call('HGET', KEYS[3] .. jobId, 'priority')
-          if not priority then priority = 10 end
-          redis.call('ZREM', KEYS[1], jobId)
-          redis.call('ZADD', KEYS[2], priority, jobId)
+        local jobs = redis.call('ZRANGEBYSCORE', KEYS[1], '-inf', ARGV[1], 'LIMIT', 0, 100)
+        if #jobs > 0 then
+          for i, jobId in ipairs(jobs) do
+            local priority = redis.call('HGET', KEYS[3] .. jobId, 'priority')
+            if not priority then priority = 10 end
+            redis.call('ZREM', KEYS[1], jobId)
+            redis.call('ZADD', KEYS[2], priority, jobId)
+          end
         end
-      end
-      return #jobs
-      `,
+        return #jobs
+        `,
     });
     logger.info(
       { workerId: this.workerId, queue: this.queue ?? null },
@@ -202,10 +202,6 @@ class CharonWorker {
       }
 
       this.activeWorkers--;
-      if (this.shouldStop && this.activeWorkers === 0) {
-        logger.info({ queue: this.queue }, "All jobs finished, exiting now");
-        process.exit(0);
-      }
     }
   }
   async start() {
@@ -214,17 +210,34 @@ class CharonWorker {
       { queue: this.queue, concurrency: this.concurrency },
       "Starting workers",
     );
-    process.on("SIGINT", () => {
-      logger.info({ queue: this.queue }, "Shutdown signal received");
-      this.shouldStop = true;
-      if (this.activeWorkers === 0) process.exit(0);
-    });
+    
 
     for (let i = 0; i < this.concurrency; i++) {
       this.startWorker(this.queue);
     }
     this.pollDelayedJobs(this.queue);
     this.pollStalledJobs(this.queue);
+  }
+
+  async stop(timeoutMs = 30000) {
+    logger.info({ queue: this.queue }, "Worker stop requested, draining...");
+    this.shouldStop = true;
+    
+    const startTime = Date.now();
+
+    // Return a Promise that polls until all active workers have finished their jobs or timeout expires
+    return new Promise(async (resolve) => {
+      while (this.activeWorkers > 0) {
+        if (Date.now() - startTime > timeoutMs) {
+          logger.warn({ queue: this.queue }, "Worker drain timed out. Force closing connections.");
+          break;
+        }
+        await this.sleep(100);
+      }
+      await this.redis.quit();
+      logger.info({ queue: this.queue }, "Worker fully drained or timed out");
+      resolve();
+    });
   }
 }
 

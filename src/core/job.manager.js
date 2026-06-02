@@ -49,7 +49,7 @@ class JobManager {
       'completedAt',
       completedAt,
     );
-    if (queueName) {
+    if (queueName) { 
       await this.redis.zrem(`active:${queueName}`, jobId);
       await this.redis.zadd(`completed:${queueName}`, completedAt, jobId)
     }
