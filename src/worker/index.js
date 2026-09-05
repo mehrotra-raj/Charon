@@ -210,7 +210,7 @@ class CharonWorker {
       { queue: this.queue, concurrency: this.concurrency },
       "Starting workers",
     );
-    
+
 
     for (let i = 0; i < this.concurrency; i++) {
       this.startWorker(this.queue);
@@ -222,7 +222,7 @@ class CharonWorker {
   async stop(timeoutMs = 30000) {
     logger.info({ queue: this.queue }, "Worker stop requested, draining...");
     this.shouldStop = true;
-    
+
     const startTime = Date.now();
 
     // Return a Promise that polls until all active workers have finished their jobs or timeout expires

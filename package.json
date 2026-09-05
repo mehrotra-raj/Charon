@@ -12,6 +12,7 @@
     "start:worker": "node src/index.js"
   },
   "dependencies": {
+    "dotenv": "^17.4.2",
     "express": "^5.2.1",
     "ioredis": "^5.10.1",
     "pino": "^10.3.1",
